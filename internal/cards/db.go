@@ -18,8 +18,13 @@ import (
 
 type Card = riftcodex.Card
 
-// ErrNoCache is returned by Load when the cache file has not been created yet.
-var ErrNoCache = errors.New("card cache not found; run `sync` first")
+var (
+	// ErrNoCache is returned by Load when the cache file has not been created yet.
+	ErrNoCache = errors.New("card cache not found; run `sync` first")
+	// ErrNotFound and ErrAmbiguous are wrapped by Resolve.
+	ErrNotFound  = errors.New("card not found")
+	ErrAmbiguous = errors.New("ambiguous card reference")
+)
 
 type cacheFile struct {
 	SyncedAt time.Time `json:"synced_at"`
@@ -48,22 +53,36 @@ func Load(path string) (*DB, error) {
 	if err != nil {
 		return nil, err
 	}
-	var f cacheFile
-	if err := json.Unmarshal(b, &f); err != nil {
+	db, err := Decode(b)
+	if err != nil {
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
-	return New(f.Cards, f.SyncedAt), nil
+	return db, nil
 }
 
 func Save(path string, cards []Card) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	b, err := json.Marshal(cacheFile{SyncedAt: time.Now().UTC(), Cards: cards})
+	b, err := Encode(cards)
 	if err != nil {
 		return err
 	}
 	return os.WriteFile(path, b, 0o644)
+}
+
+// Encode serializes cards in the cache format, stamped with the current time.
+// The same format is used for the local cache and the copy stored in S3.
+func Encode(cards []Card) ([]byte, error) {
+	return json.Marshal(cacheFile{SyncedAt: time.Now().UTC(), Cards: cards})
+}
+
+func Decode(b []byte) (*DB, error) {
+	var f cacheFile
+	if err := json.Unmarshal(b, &f); err != nil {
+		return nil, err
+	}
+	return New(f.Cards, f.SyncedAt), nil
 }
 
 // ByID returns the card with the given Riftbound ID (e.g. "unl-121-219").
@@ -100,7 +119,7 @@ func (db *DB) Resolve(ref string) (*Card, error) {
 		return c, nil
 	}
 	if len(exact)+len(partial) == 0 {
-		return nil, fmt.Errorf("no card matches %q", ref)
+		return nil, fmt.Errorf("%w: nothing matches %q", ErrNotFound, ref)
 	}
 	candidates := append(exact, partial...)
 	var names []string
@@ -115,7 +134,7 @@ func (db *DB) Resolve(ref string) (*Card, error) {
 	if len(names) > 10 {
 		names = append(names[:10], "...")
 	}
-	return nil, fmt.Errorf("%q is ambiguous; matches: %s", ref, strings.Join(names, ", "))
+	return nil, fmt.Errorf("%w: %q matches %s", ErrAmbiguous, ref, strings.Join(names, ", "))
 }
 
 // pickPrinting returns a card if all candidates are printings of the same base

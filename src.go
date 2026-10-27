@@ -3,10 +3,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -22,6 +25,7 @@ import (
 const usage = `deckbuilder - Riftbound deckbuilder (card data from riftcodex.com)
 
 Usage:
+  deckbuilder version                           print the version
   deckbuilder sync                              download/refresh the card database
   deckbuilder search [text] [flags]             search cards
       -type T    Unit, Spell, Gear, Legend, Rune, Battlefield, Champion, Signature
@@ -40,7 +44,8 @@ Usage:
                                                 go to the right place automatically)
   deckbuilder deck rm <deck> <card> [count]     remove cards (all copies if no count)
   deckbuilder deck champion <deck> <card>       set the chosen champion
-  deckbuilder deck check <deck>                 check deckbuilding rules
+  deckbuilder deck check <deck> [--remote]      check deckbuilding rules (--remote uses
+                                                the API at $RIFTBOUND_API_URL)
   deckbuilder deck export <deck>                print a plain-text decklist
   deckbuilder deck delete <deck>                delete a deck
 
@@ -48,9 +53,17 @@ A <card> is a Riftbound ID (e.g. ogn-001-298), a card name, or part of one.
 Quote names containing spaces. Data lives in $RIFTBOUND_HOME (default ~/.riftbound).
 `
 
+// Set at build time with -ldflags "-X main.version=... -X main.commit=...".
+var (
+	version = "dev"
+	commit  = "none"
+)
+
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		fmt.Fprintln(os.Stderr, "error:", err)
+		if !errors.Is(err, errIllegal) { // problems were already printed
+			fmt.Fprintln(os.Stderr, "error:", err)
+		}
 		os.Exit(1)
 	}
 }
@@ -58,6 +71,10 @@ func main() {
 func run(args []string) error {
 	if len(args) == 0 || args[0] == "help" || args[0] == "-h" || args[0] == "--help" {
 		fmt.Print(usage)
+		return nil
+	}
+	if args[0] == "version" || args[0] == "--version" {
+		fmt.Printf("deckbuilder %s (%s)\n", version, commit)
 		return nil
 	}
 	app, err := newApp()
@@ -244,14 +261,14 @@ func printCard(c *cards.Card) {
 
 func (a *app) deck(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: deckbuilder deck <list|new|show|add|rm|champion|check|export|delete> ...")
+		return errors.New("usage: deckbuilder deck <list|new|show|add|rm|champion|check|export|delete> <deck>")
 	}
 	sub, args := args[0], args[1:]
 	if sub == "list" || sub == "ls" {
 		return a.deckList()
 	}
 	if len(args) == 0 {
-		return fmt.Errorf("usage: deckbuilder deck %s <deck> ...", sub)
+		return fmt.Errorf("usage: deckbuilder deck %s <deck> [args]", sub)
 	}
 	name, args := args[0], args[1:]
 
@@ -269,6 +286,9 @@ func (a *app) deck(args []string) error {
 	d, err := a.decks.Load(name)
 	if err != nil {
 		return err
+	}
+	if sub == "check" && slices.Contains(args, "--remote") {
+		return remoteCheck(d)
 	}
 	db, err := a.cards()
 	if err != nil {
@@ -479,9 +499,13 @@ func (a *app) printDeck(d *deck.Deck, db *cards.DB) {
 		}
 	}
 	fmt.Println()
-	printProblems(d.Validate(db))
+	_ = printProblems(d.Validate(db)) // show reports problems but doesn't fail
 }
 
+var errIllegal = errors.New("deck is not legal")
+
+// printProblems prints a validation result and returns errIllegal if there
+// are problems, so `deck check` exits non-zero for illegal decks.
 func printProblems(problems []string) error {
 	if len(problems) == 0 {
 		fmt.Println("✓ Deck is legal")
@@ -491,7 +515,36 @@ func printProblems(problems []string) error {
 	for _, p := range problems {
 		fmt.Println("  - " + p)
 	}
-	return nil
+	return errIllegal
+}
+
+// remoteCheck validates a deck with the deployed API instead of locally.
+func remoteCheck(d *deck.Deck) error {
+	base := strings.TrimRight(os.Getenv("RIFTBOUND_API_URL"), "/")
+	if base == "" {
+		return errors.New("set RIFTBOUND_API_URL to use --remote")
+	}
+	body, err := json.Marshal(d)
+	if err != nil {
+		return err
+	}
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Post(base+"/decks/validate", "application/json", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	var out struct {
+		Problems []string `json:"problems"`
+		Error    string   `json:"error"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return fmt.Errorf("decoding API response (%s): %w", resp.Status, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("API error (%s): %s", resp.Status, out.Error)
+	}
+	return printProblems(out.Problems)
 }
 
 func printExport(d *deck.Deck, db *cards.DB) {

@@ -1,8 +1,8 @@
 package cards
 
 import (
+	"errors"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 )
@@ -40,10 +40,10 @@ func TestResolve(t *testing.T) {
 			t.Errorf("Resolve(%q) = %v, %v; want %s", ref, c, err, want)
 		}
 	}
-	if _, err := db.Resolve("rune"); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+	if _, err := db.Resolve("rune"); !errors.Is(err, ErrAmbiguous) {
 		t.Errorf("Resolve(rune) err = %v, want ambiguous", err)
 	}
-	if _, err := db.Resolve("zzz"); err == nil {
+	if _, err := db.Resolve("zzz"); !errors.Is(err, ErrNotFound) {
 		t.Error("Resolve(zzz) should fail")
 	}
 }
@@ -64,7 +64,7 @@ func TestSearchCollapsesPrintings(t *testing.T) {
 
 func TestCacheRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "sub", "cards.json")
-	if _, err := Load(path); err != ErrNoCache {
+	if _, err := Load(path); !errors.Is(err, ErrNoCache) {
 		t.Fatalf("Load missing = %v, want ErrNoCache", err)
 	}
 	if err := Save(path, []Card{named("a-1", "X", "Unit")}); err != nil {

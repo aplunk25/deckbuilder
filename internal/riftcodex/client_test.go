@@ -31,10 +31,13 @@ func TestDecodeFixture(t *testing.T) {
 func TestAllCardsPaginates(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		page := r.URL.Query().Get("page")
-		json.NewEncoder(w).Encode(Page{
+		err := json.NewEncoder(w).Encode(Page{
 			Items: []Card{{Name: "card " + page}},
 			Total: 3, Pages: 3,
 		})
+		if err != nil {
+			t.Error(err)
+		}
 	}))
 	defer srv.Close()
 

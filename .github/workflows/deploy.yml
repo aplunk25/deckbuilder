@@ -1,0 +1,103 @@
+name: Deploy
+
+# Deploys the Lambda API to AWS with Terraform whenever main changes.
+# Requires (see README "Deploying to AWS"):
+#   - a GitHub environment named "production"
+#   - environment variables AWS_DEPLOY_ROLE_ARN and TF_STATE_BUCKET
+on:
+  push:
+    branches: [main]
+    paths:
+      - "cmd/**"
+      - "internal/**"
+      - "infra/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/deploy.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Never run two deploys at once, and never cancel one mid-apply.
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - run: go test -race ./...
+
+  deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: ${{ steps.out.outputs.api_url }}
+    permissions:
+      contents: read
+      id-token: write # OIDC token for assuming the AWS role
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+      - name: Build Lambda binaries
+        run: make lambda
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          aws-region: us-east-1
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "~1.17"
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: infra
+        run: terraform init -input=false -backend-config="bucket=${{ vars.TF_STATE_BUCKET }}"
+
+      - name: Terraform plan
+        working-directory: infra
+        run: terraform plan -input=false -out=tfplan
+
+      - name: Terraform apply
+        working-directory: infra
+        run: terraform apply -input=false tfplan
+
+      - id: out
+        working-directory: infra
+        run: |
+          echo "api_url=$(terraform output -raw api_url)" >> "$GITHUB_OUTPUT"
+          echo "sync_function=$(terraform output -raw sync_function)" >> "$GITHUB_OUTPUT"
+
+      # On the very first deploy the bucket is empty until the nightly sync
+      # runs, so populate it now if the API reports no card data.
+      - name: Seed card data if needed
+        run: |
+          status=$(curl -s -o /dev/null -w '%{http_code}' "${{ steps.out.outputs.api_url }}/health")
+          if [ "$status" = "503" ]; then
+            aws lambda invoke --function-name "${{ steps.out.outputs.sync_function }}" \
+              --cli-read-timeout 180 /tmp/sync.json
+            cat /tmp/sync.json
+          fi
+
+      - name: Smoke test
+        run: |
+          for i in 1 2 3 4 5; do
+            if curl -sf "${{ steps.out.outputs.api_url }}/health"; then exit 0; fi
+            sleep 5
+          done
+          echo "health check failed" >&2
+          exit 1

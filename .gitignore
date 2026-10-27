@@ -1,1 +1,7 @@
 /deckbuilder
+/build/
+/dist/
+coverage.out
+.terraform/
+*.tfstate
+*.tfstate.*
