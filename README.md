@@ -62,10 +62,15 @@ Run it locally against your CLI card cache with `make api-local` (serves on `:80
 
 - 1 legend; its domains define which cards are allowed (Colorless is always allowed)
 - 1 chosen champion unit that shares the legend's champion tag
-- Main deck of at least 40 cards (including the chosen champion)
+- Exactly 40 cards in the main deck (including the chosen champion)
 - At most 3 copies of a card by name; alternate printings count together
 - At most 3 signature cards, all matching the legend's champion
 - Exactly 12 runes and 3 different battlefields; no tokens
+- No cards or battlefields on the sanctioned Constructed ban list
+
+The tournament size and current Constructed bans follow the [official Riftbound
+Rules Hub](https://playriftbound.com/en-us/rules-hub/) (Tournament Rules updated
+October 9, 2026; Constructed legality updated September 18, 2026).
 
 ## CI/CD
 

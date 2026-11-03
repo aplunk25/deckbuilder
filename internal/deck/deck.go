@@ -23,6 +23,19 @@ const (
 	MaxSignatures   = 3
 )
 
+// Sanctioned Constructed bans published by Riftbound's official Rules Hub.
+var bannedConstructedCards = map[string]bool{
+	"called shot": true, "ekko, recurrent": true, "draven, vanquisher": true,
+	"fight or flight": true, "scrapheap": true, "stealthy pursuer": true,
+	"stacked deck": true,
+}
+
+var bannedConstructedBattlefields = map[string]bool{
+	"the arena’s greatest": true, "the arena's greatest": true,
+	"aspirant’s climb": true, "aspirant's climb": true,
+	"dreaming tree": true, "obelisk of power": true, "reaver’s row": true, "reaver's row": true,
+}
+
 // Deck stores cards by Riftbound ID. The chosen champion is kept separately
 // from Main but counts toward the main deck size and copy limits.
 type Deck struct {
@@ -212,13 +225,19 @@ func (d *Deck) Validate(db *cards.DB) []string {
 	}
 
 	// Main deck.
-	if n := d.MainCount(); n < MainDeckMin {
-		bad("main deck has %d cards; needs at least %d", n, MainDeckMin)
+	if n := d.MainCount(); n != MainDeckMin {
+		bad("main deck has %d cards; tournament decks need exactly %d", n, MainDeckMin)
 	}
 	copies := map[string]int{}
 	signatures := 0
 	countCard := func(c *cards.Card, n int) {
+		if n <= 0 {
+			bad("%s has invalid copy count %d", c.Name, n)
+		}
 		copies[cards.BaseName(c)] += n
+		if bannedConstructedCards[strings.ToLower(cards.BaseName(c))] {
+			bad("%s is banned in sanctioned Constructed tournaments", cards.BaseName(c))
+		}
 		if cards.Supertype(c) == "Signature" {
 			signatures += n
 			if !sharesTag(c) {
@@ -263,8 +282,16 @@ func (d *Deck) Validate(db *cards.DB) []string {
 		bad("rune deck has %d runes; needs exactly %d", n, RuneDeckSize)
 	}
 	for _, id := range sortedKeys(d.Runes) {
-		if c := lookup(id); c != nil && !allowed(c) {
-			bad("%s is outside the legend's domains", c.Name)
+		if c := lookup(id); c != nil {
+			if ZoneFor(c) != ZoneRunes {
+				bad("%s (%s) cannot be in the rune deck", c.Name, c.Classification.Type)
+			}
+			if d.Runes[id] <= 0 {
+				bad("%s has invalid copy count %d", c.Name, d.Runes[id])
+			}
+			if !allowed(c) {
+				bad("%s is outside the legend's domains", c.Name)
+			}
 		}
 	}
 
@@ -275,6 +302,13 @@ func (d *Deck) Validate(db *cards.DB) []string {
 	seen := map[string]bool{}
 	for _, id := range d.Battlefields {
 		if c := lookup(id); c != nil {
+			if ZoneFor(c) != ZoneBattlefield {
+				bad("%s (%s) cannot be a battlefield", c.Name, c.Classification.Type)
+			}
+			name := strings.ToLower(cards.BaseName(c))
+			if bannedConstructedBattlefields[name] {
+				bad("battlefield %s is banned in sanctioned Constructed tournaments", cards.BaseName(c))
+			}
 			if seen[cards.BaseName(c)] {
 				bad("battlefield %s is included more than once", cards.BaseName(c))
 			}
